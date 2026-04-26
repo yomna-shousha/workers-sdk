@@ -51,6 +51,18 @@ export const previewCommand = createCommand({
 			type: "boolean",
 			default: false,
 		},
+		"no-sync": {
+			describe:
+				"Skip syncing your local previews config to the Worker's shared Previews settings on the platform",
+			type: "boolean",
+			default: false,
+		},
+		"skip-confirmation": {
+			describe: "Skip the confirmation prompt when syncing settings",
+			type: "boolean",
+			default: false,
+			alias: "y",
+		},
 		"worker-name": {
 			describe:
 				"Name of the Worker to target (defaults to the name in your local config file)",

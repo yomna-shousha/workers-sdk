@@ -761,6 +761,10 @@ export async function handlePreviewCommand(
 		message?: string;
 		json?: boolean;
 		ignoreDefaults: boolean;
+		noSync?: boolean;
+		"no-sync"?: boolean;
+		skipConfirmation?: boolean;
+		"skip-confirmation"?: boolean;
 		workerName?: string;
 		"worker-name"?: string;
 	},
@@ -872,17 +876,22 @@ export async function handlePreviewCommand(
 	logger.log(formatDeploymentResource(deployment, versionLevel, configName));
 
 	// Sync local previews config to the platform's shared Preview settings.
-	// Your config file is the source of truth — running 'wrangler preview'
-	// makes the platform reflect what's in your config, with a diff shown
-	// before any changes are applied.
-	if (config.previews !== undefined) {
+	// This is the default behavior — your config file is the source of truth.
+	// Use --no-sync to skip this step for one-off tests.
+	const noSync = args.noSync ?? args["no-sync"] ?? false;
+	const skipConfirmation =
+		args.skipConfirmation ?? args["skip-confirmation"] ?? false;
+	const hasPreviewsConfig = config.previews !== undefined;
+
+	if (!noSync && hasPreviewsConfig) {
 		await syncPreviewSettings({
 			config,
 			accountId,
 			workerName,
+			skipConfirmation,
 		});
-	} else {
-		// No previews block in config — warn about missing bindings.
+	} else if (!noSync && !hasPreviewsConfig) {
+		// No previews block in config — warn about missing bindings like before
 		const topLevelBindings = getBindings(config);
 		if (Object.keys(topLevelBindings).length > 0) {
 			logMissingPreviewsBindingsWarning(topLevelBindings);
