@@ -4,9 +4,11 @@ import { confirm } from "../dialogs";
 import { logger } from "../logger";
 import { requireAuth } from "../user";
 import { drawBox, padToVisibleWidth, visibleLength } from "../utils/box";
-import { diffJsonObjects } from "../utils/diff-json";
-import { mergeDeep } from "../utils/merge-deep";
-import { editWorkerPreviewDefaults, getWorkerPreviewDefaults } from "./api";
+import { diffJsonObjects, isNonDestructive } from "../utils/diff-json";
+import {
+	getWorkerPreviewDefaults,
+	replaceWorkerPreviewDefaults,
+} from "./api";
 import {
 	assemblePreviewDefaults,
 	getBindingValue,
@@ -121,6 +123,82 @@ export function formatPreviewsSettings(
 	return drawBox(lines);
 }
 
+/**
+ * Sync local previews config to the platform's shared Preview settings using
+ * full replacement semantics. Shows a diff and asks for confirmation when
+ * the sync would remove settings that exist on the platform but not locally.
+ *
+ * This is used by both `wrangler preview` (sync after deploy) and
+ * `wrangler preview settings update` (sync without deploying).
+ *
+ * @returns true if sync was performed, false if skipped/aborted
+ */
+export async function syncPreviewSettings(options: {
+	config: Config;
+	accountId: string;
+	workerName: string;
+	skipConfirmation?: boolean;
+}): Promise<boolean> {
+	const { config, accountId, workerName, skipConfirmation } = options;
+
+	const currentPreviewDefaults = await getWorkerPreviewDefaults(
+		config,
+		accountId,
+		workerName
+	);
+	const desiredPreviewDefaults = assemblePreviewDefaults(config);
+
+	const diff = diffJsonObjects(
+		currentPreviewDefaults as Record<string, JsonLike>,
+		desiredPreviewDefaults as Record<string, JsonLike>
+	);
+
+	if (!diff) {
+		return false; // already in sync
+	}
+
+	const hasDestructiveChanges = !isNonDestructive(diff);
+
+	logger.log(`${diff}`);
+
+	if (hasDestructiveChanges && !skipConfirmation) {
+		const shouldProceed = await confirm(
+			`These are shared Previews settings for Worker ${chalk.bold.cyan(
+				workerName
+			)}. Applying these changes will affect all future Previews.\n` +
+				`Some values will be removed from the platform. Continue?`
+		);
+		if (!shouldProceed) {
+			logger.log("Settings sync aborted. Deployment was still created.");
+			return false;
+		}
+	} else if (!skipConfirmation) {
+		const shouldProceed = await confirm(
+			`Sync these changes to the shared Previews settings of Worker ${chalk.bold.cyan(
+				workerName
+			)}?`
+		);
+		if (!shouldProceed) {
+			logger.log("Settings sync skipped. Deployment was still created.");
+			return false;
+		}
+	}
+
+	const updatedPreviewDefaults = await replaceWorkerPreviewDefaults(
+		config,
+		accountId,
+		workerName,
+		currentPreviewDefaults,
+		desiredPreviewDefaults
+	);
+
+	logger.log(
+		`\n✨ Synced Previews settings for Worker ${chalk.bold.cyan(workerName)}.`
+	);
+	logger.log(formatPreviewsSettings(workerName, updatedPreviewDefaults));
+	return true;
+}
+
 export async function handlePreviewSettingsUpdateCommand(
 	args: {
 		skipConfirmation?: boolean;
@@ -132,69 +210,33 @@ export async function handlePreviewSettingsUpdateCommand(
 	const workerName = resolveWorkerName(args, config);
 	const accountId = await requireAuth(config);
 
-	const currentPreviewDefaults = await getWorkerPreviewDefaults(
-		config,
-		accountId,
-		workerName
-	);
-	const resolvedConfigFileSettings = assemblePreviewDefaults(config);
-	const requestPayloadPreviewDefaults = mergeDeep(
-		currentPreviewDefaults as Record<string, unknown>,
-		resolvedConfigFileSettings
-	);
-
-	// Individual binding entries within env should be replaced wholesale,
-	// not deep-merged. Deep merging would leak stale properties when a
-	// binding changes type (e.g. kv_namespace -> d1).
-	if (
-		currentPreviewDefaults.env !== undefined ||
-		resolvedConfigFileSettings.env !== undefined
-	) {
-		requestPayloadPreviewDefaults.env = {
-			...currentPreviewDefaults.env,
-			...resolvedConfigFileSettings.env,
-		};
-	}
-
-	const diff = diffJsonObjects(
-		currentPreviewDefaults as Record<string, JsonLike>,
-		requestPayloadPreviewDefaults as Record<string, JsonLike>
-	);
-
-	if (!diff) {
-		logger.log(
-			`\n✨ Previews settings for Worker ${chalk.bold.cyan(
-				workerName
-			)} are already up to date.`
-		);
-		return;
-	}
-
-	logger.log(`${diff}`);
-
-	if (!args.skipConfirmation) {
-		const shouldProceed = await confirm(
-			`Apply these updates to the Previews settings of Worker ${chalk.bold.cyan(
-				workerName
-			)}?`
-		);
-		if (!shouldProceed) {
-			logger.log("Aborted.");
-			return;
-		}
-	}
-
-	const updatedPreviewDefaults = await editWorkerPreviewDefaults(
+	const synced = await syncPreviewSettings({
 		config,
 		accountId,
 		workerName,
-		requestPayloadPreviewDefaults
-	);
+		skipConfirmation: args.skipConfirmation,
+	});
 
-	logger.log(
-		`\n✨ Updated Previews settings for Worker ${chalk.bold.cyan(workerName)}.`
-	);
-	logger.log(formatPreviewsSettings(workerName, updatedPreviewDefaults));
+	if (!synced) {
+		// Check if it was already in sync (no diff) vs user aborted
+		const currentPreviewDefaults = await getWorkerPreviewDefaults(
+			config,
+			accountId,
+			workerName
+		);
+		const desiredPreviewDefaults = assemblePreviewDefaults(config);
+		const diff = diffJsonObjects(
+			currentPreviewDefaults as Record<string, JsonLike>,
+			desiredPreviewDefaults as Record<string, JsonLike>
+		);
+		if (!diff) {
+			logger.log(
+				`\n✨ Previews settings for Worker ${chalk.bold.cyan(
+					workerName
+				)} are already up to date.`
+			);
+		}
+	}
 }
 
 export async function handlePreviewSettingsCommand(
