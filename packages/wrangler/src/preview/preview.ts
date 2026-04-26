@@ -40,7 +40,6 @@ import {
 	editPreview,
 	getPreviewDeployment,
 	getPreview,
-	getWorkerPreviewDefaults,
 } from "./api";
 import {
 	assemblePreviewScriptSettings,
@@ -52,6 +51,7 @@ import {
 	resolveWorkerName,
 	shouldUseCIMetadataFallback,
 } from "./shared";
+import { syncPreviewSettings } from "./settings";
 import type { StartDevWorkerInput } from "../api/startDevWorker/types";
 import type {
 	Binding,
@@ -728,18 +728,11 @@ function isInheritableBinding(
 }
 
 function logMissingPreviewsBindingsWarning(
-	topLevelBindings: StartDevWorkerInput["bindings"],
-	remotePreviewDefaultBindings: Record<string, Binding> | undefined,
-	localPreviewBindings: Record<string, Binding>
+	topLevelBindings: StartDevWorkerInput["bindings"]
 ) {
-	const availableBindingNames = new Set([
-		...Object.keys(remotePreviewDefaultBindings ?? {}),
-		...Object.keys(localPreviewBindings),
-	]);
 	const missingBindings = Object.fromEntries(
 		Object.entries(topLevelBindings ?? {}).filter(
-			([name, binding]) =>
-				!availableBindingNames.has(name) && !isInheritableBinding(binding)
+			([, binding]) => !isInheritableBinding(binding)
 		)
 	);
 
@@ -747,8 +740,8 @@ function logMissingPreviewsBindingsWarning(
 		return;
 	}
 
-	logger.warn(`Your configuration has diverged.
-The following bindings are configured at the top level of your Wrangler config file, but are missing from the Previews settings of your Worker.
+	logger.warn(`No ${chalk.cyan(`"previews"`)} block found in your config file.
+The following production bindings will not be available in your Previews:
 
 ${Object.entries(missingBindings)
 	.map(
@@ -757,7 +750,7 @@ ${Object.entries(missingBindings)
 	)
 	.join("\n")}
 
-Either include these bindings in the ${chalk.cyan(`"previews"`)} field of your Wrangler config or update the Previews settings of your Worker in the Cloudflare dashboard.`);
+Add a ${chalk.cyan(`"previews"`)} block to your config file to configure bindings for your Previews.`);
 }
 
 export async function handlePreviewCommand(
@@ -878,18 +871,22 @@ export async function handlePreviewCommand(
 	);
 	logger.log(formatDeploymentResource(deployment, versionLevel, configName));
 
-	const topLevelBindings = getBindings(config);
-	if (Object.keys(topLevelBindings).length > 0) {
-		const previewDefaults = await getWorkerPreviewDefaults(
+	// Sync local previews config to the platform's shared Preview settings.
+	// Your config file is the source of truth — running 'wrangler preview'
+	// makes the platform reflect what's in your config, with a diff shown
+	// before any changes are applied.
+	if (config.previews !== undefined) {
+		await syncPreviewSettings({
 			config,
 			accountId,
-			workerName
-		);
-		logMissingPreviewsBindingsWarning(
-			topLevelBindings,
-			previewDefaults.env,
-			extractConfigBindings(config)
-		);
+			workerName,
+		});
+	} else {
+		// No previews block in config — warn about missing bindings.
+		const topLevelBindings = getBindings(config);
+		if (Object.keys(topLevelBindings).length > 0) {
+			logMissingPreviewsBindingsWarning(topLevelBindings);
+		}
 	}
 }
 
